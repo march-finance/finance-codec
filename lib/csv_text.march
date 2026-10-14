@@ -1,0 +1,41 @@
+mod CodecCsvText do
+  ptype CsvMode = CellStart | CellBare | CellQuoted | CellClosed
+
+  pfn value(parts : List(String)) : String do String.join(List.reverse(parts), "") end
+  pfn end_row(rest : List(String), parts : List(String), row : List(String), rows : List(List(String))) : Result(List(List(String)), CodecError.Error) do
+    go(rest, CellStart, Nil, Nil, Cons(List.reverse(Cons(value(parts), row)), rows), false)
+  end
+  pfn go(chars : List(String), mode : CsvMode, parts : List(String), row : List(String), rows : List(List(String)), touched : Bool) : Result(List(List(String)), CodecError.Error) do
+    match chars do
+      Nil -> match mode do
+        CellQuoted -> Err(CodecError.InvalidCsv)
+        _ -> if touched || !List.is_empty(row) do Ok(List.reverse(Cons(List.reverse(Cons(value(parts), row)), rows))) else Ok(List.reverse(rows)) end
+      end
+      Cons(c, rest) -> match mode do
+        CellQuoted ->
+          if c == "\"" do go(rest, CellClosed, parts, row, rows, true)
+          else go(rest, CellQuoted, Cons(c, parts), row, rows, true) end
+        _ ->
+          if c == "," do go(rest, CellStart, Nil, Cons(value(parts), row), rows, true)
+          else if c == "\n" do end_row(rest, parts, row, rows)
+          else if c == "\r" do match rest do
+            Cons("\n", tail) -> end_row(tail, parts, row, rows)
+            _ -> Err(CodecError.InvalidCsv)
+          end
+          else match mode do
+            CellStart -> if c == "\"" do go(rest, CellQuoted, parts, row, rows, true) else go(rest, CellBare, Cons(c, parts), row, rows, true) end
+            CellBare -> if c == "\"" do Err(CodecError.InvalidCsv) else go(rest, CellBare, Cons(c, parts), row, rows, true) end
+            CellClosed -> if c == "\"" do go(rest, CellQuoted, Cons("\"", parts), row, rows, true) else Err(CodecError.InvalidCsv) end
+            CellQuoted -> Err(CodecError.InvalidCsv)
+          end end end end
+      end
+    end
+  end
+  doc "Pure strict CSV: LF/CRLF rows, quoted multiline fields, doubled quote escapes."
+  fn parse(s : String) : Result(List(List(String)), CodecError.Error) do go(string_chars(s), CellStart, Nil, Nil, Nil, false) end
+  fn format(rows : List(List(String))) : String do
+    if List.is_empty(rows) do "" else
+      String.join(List.map(rows, fn row -> String.join(List.map(row, fn field -> "\"" ++ String.replace_all(field, "\"", "\"\"") ++ "\""), ",")), "\r\n") ++ "\r\n"
+    end
+  end
+end

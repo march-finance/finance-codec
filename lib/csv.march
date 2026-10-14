@@ -1,0 +1,98 @@
+mod CodecCsv do
+  ptype PostingRow = PostingRowValue(Int, List(String), LedgerEntry.Draft, Option(String), Int, LedgerEntry.Posting)
+
+  fn account_header() : List(String) do ["version", "account_id", "kind", "asset", "precision"] end
+  fn posting_header() : List(String) do ["version", "entry_index", "entry_id", "source", "effective", "recorded", "has_external_id", "external_id", "reversal_of", "posting_index", "account_id", "direction", "asset", "precision", "amount"] end
+  pfn optional_text(s : Option(String)) : String do
+    match s do
+      None -> ""
+      Some(value) -> value
+    end
+  end
+  pfn account_row(a : LedgerAccount.Account) : List(String) do
+    let asset = LedgerAccount.asset(a)
+    ["1", LedgerAccount.id(a), CodecJson.kind_text(LedgerAccount.kind(a)), FinanceAsset.asset_id(asset), int_to_string(FinanceAsset.precision(asset))]
+  end
+  pfn posting_rows(index : Int, p : LedgerJournal.PostedEntry) : List(List(String)) do
+    let d = LedgerJournal.draft(p)
+    let m = LedgerEntry.metadata(d)
+    let external = FinanceMetadata.external_id(m)
+    let flag = if Option.is_some(external) do "1" else "0" end
+    let prefix = ["1", int_to_string(index), LedgerEntry.id(d), FinanceMetadata.source(m), int_to_string(FinanceMetadata.effective(m)), int_to_string(FinanceMetadata.recorded(m)), flag, optional_text(external), optional_text(LedgerJournal.reversal_of(p))]
+    List.map(List.enumerate(LedgerEntry.postings(d)), fn item ->
+      let (i, posting) = item
+      let q = LedgerEntry.quantity(posting)
+      let a = FinanceAmount.quantity_asset(q)
+      List.append(prefix, [int_to_string(i), LedgerEntry.account(posting), CodecJson.direction_text(LedgerEntry.direction(posting)), FinanceAsset.asset_id(a), int_to_string(FinanceAsset.precision(a)), FinanceAmount.format(q)]))
+  end
+  fn encode_journal(l : LedgerJournal.Ledger) : (String, String) do
+    let accounts = Cons(account_header(), List.map(LedgerJournal.accounts(l), account_row))
+    let rows = List.flat_map(List.enumerate(LedgerJournal.entries(l)), fn item -> let (i, p) = item posting_rows(i, p))
+    (CodecCsvText.format(accounts), CodecCsvText.format(Cons(posting_header(), rows)))
+  end
+  pfn table(s : String, header : List(String)) : Result(List(List(String)), CodecError.Error) do
+    let? rows = CodecCsvText.parse(s)
+    match rows do
+      Cons(h, rest) -> if h == header do Ok(rest) else Err(CodecError.InvalidCsv) end
+      Nil -> Err(CodecError.InvalidCsv)
+    end
+  end
+  pfn account_from_row(row : List(String)) : Result(LedgerAccount.Account, CodecError.Error) do
+    match row do
+      [v, id, kind, asset, precision] -> CodecJson.account_from_value(Json.Object([
+        ("version", Json.Str(v)), ("id", Json.Str(id)), ("kind", Json.Str(kind)),
+        ("asset", Json.Str(asset)), ("precision", Json.Str(precision))]))
+      _ -> Err(CodecError.InvalidCsv)
+    end
+  end
+  pfn posting_from_row(row : List(String)) : Result(PostingRow, CodecError.Error) do
+    match row do
+      [v, entry_index, id, source, effective, recorded, flag, external, reversal, posting_index, account, direction, asset, precision, amount] ->
+        let? ei = CodecWire.integer(entry_index)
+        let? pi = CodecWire.integer(posting_index)
+        let? ext = if flag == "0" && external == "" do Ok(Json.Null)
+          else if flag == "1" do Ok(Json.Str(external)) else Err(CodecError.InvalidCsv) end end
+        let? d = CodecJson.draft_from_value(Json.Object([
+          ("version", Json.Str(v)), ("id", Json.Str(id)), ("source", Json.Str(source)),
+          ("effective", Json.Str(effective)), ("recorded", Json.Str(recorded)),
+          ("external_id", ext), ("postings", Json.Array(Nil))]))
+        let? p = CodecJson.posting_from_value(Json.Object([
+          ("account", Json.Str(account)), ("direction", Json.Str(direction)),
+          ("quantity", Json.Object([("version", Json.Str(v)), ("asset", Json.Str(asset)), ("precision", Json.Str(precision)), ("amount", Json.Str(amount))]))]))
+        let prefix = [v, entry_index, id, source, effective, recorded, flag, external, reversal]
+        let link = if reversal == "" do None else Some(reversal) end
+        Ok(PostingRowValue(ei, prefix, d, link, pi, p))
+      _ -> Err(CodecError.InvalidCsv)
+    end
+  end
+  pfn group(rest : List(PostingRow), index : Int, prefix : List(String), d : LedgerEntry.Draft, link : Option(String), next_posting : Int) : Result((LedgerEntry.Draft, Option(String), List(PostingRow)), CodecError.Error) do
+    match rest do
+      Nil -> Ok((d, link, Nil))
+      Cons(row, tail) -> match row do PostingRowValue(ei, fields, _, _, pi, posting) ->
+        if ei != index do Ok((d, link, rest))
+        else if fields != prefix || pi != next_posting do Err(CodecError.InvalidCsv)
+        else group(tail, index, prefix, LedgerEntry.add(d, posting), link, next_posting + 1) end end
+      end
+    end
+  end
+  pfn entries(rows : List(PostingRow), index : Int, acc : List((LedgerEntry.Draft, Option(String)))) : Result(List((LedgerEntry.Draft, Option(String))), CodecError.Error) do
+    match rows do
+      Nil -> Ok(List.reverse(acc))
+      Cons(row, tail) -> match row do PostingRowValue(ei, fields, d, link, pi, p) ->
+        if ei != index || pi != 0 do Err(CodecError.InvalidCsv) else
+          let? collected = group(tail, index, fields, LedgerEntry.add(d, p), link, 1)
+          let (populated, reversal, rest) = collected
+          entries(rest, index + 1, Cons((populated, reversal), acc))
+        end
+      end
+    end
+  end
+  fn decode_journal(accounts_csv : String, postings_csv : String) : Result(LedgerJournal.Ledger, CodecError.Error) do
+    let? account_rows = table(accounts_csv, account_header())
+    let? accounts = Result.collect(List.map(account_rows, account_from_row))
+    let? posting_rows = table(postings_csv, posting_header())
+    let? parsed = Result.collect(List.map(posting_rows, posting_from_row))
+    let? drafts = entries(parsed, 0, Nil)
+    CodecJournal.restore(accounts, drafts)
+  end
+end

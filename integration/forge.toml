@@ -1,0 +1,10 @@
+[package]
+name = "finance-ecosystem-check"
+version = "0.1.0"
+type = "lib"
+
+[deps]
+finance-core = { path = "../../finance-core" }
+finance-ledger = { path = "../../finance-ledger" }
+finance-crypto = { path = "../../finance-crypto" }
+finance-codec = { path = ".." }

@@ -1,0 +1,36 @@
+mod CodecPropertiesTest do
+  needs IO.Clock, IO.Process
+  test "generated JSON quantities retain signed atoms identity and precision" do
+    Check.all(Gen.tuple2(Gen.int(-1000000, 1000000), Gen.int(0, 18)), fn values ->
+      let (n, precision) = values
+      let a = CodecTest.expect(FinanceAsset.asset("asset,\"é", precision))
+      let q = FinanceAmount.from_atoms(a, BigInt.from_int(n))
+      let r = CodecTest.expect(CodecJson.decode_quantity(CodecJson.encode_quantity(q)))
+      BigInt.eq(FinanceAmount.atoms(r), BigInt.from_int(n)) &&
+        LedgerAccount.same_asset(a, FinanceAmount.quantity_asset(r)))
+  end
+  test "generated JSON and CSV journal restores retain exact balances and history" do
+    Check.all(Gen.int(1, 1000000), fn n ->
+      let original = CodecTest.journal(n)
+      let json = CodecTest.expect(CodecJson.decode_journal(CodecJson.encode_journal(original)))
+      let (a, p) = CodecCsv.encode_journal(original)
+      let csv = CodecTest.expect(CodecCsv.decode_journal(a, p))
+      let expected = BigInt.from_int(n)
+      BigInt.eq(FinanceAmount.atoms(CodecTest.expect(LedgerJournal.balance(json, "cash"))), expected) &&
+        BigInt.eq(FinanceAmount.atoms(CodecTest.expect(LedgerJournal.balance(csv, "cash"))), expected) &&
+        LedgerJournal.count(csv) == 1 && CodecJson.encode_journal(json) == CodecJson.encode_journal(csv))
+  end
+  test "generated reversal histories restore immutable linked zero balances" do
+    Check.all(Gen.int(1, 1000000), fn n ->
+      let original = CodecTest.reversed(n)
+      let json = CodecTest.expect(CodecJson.decode_journal(CodecJson.encode_journal(original)))
+      let (a, p) = CodecCsv.encode_journal(original)
+      let csv = CodecTest.expect(CodecCsv.decode_journal(a, p))
+      CodecTest.balance(json) == "0.00" && CodecTest.balance(csv) == "0.00" &&
+        LedgerJournal.count(csv) == 2 && CodecJson.encode_journal(csv) == CodecJson.encode_journal(original))
+  end
+  test "generated quoted CSV fields preserve arbitrary ASCII delimiters" do
+    Check.all(Gen.string_of(Gen.int(9, 126)), fn s ->
+      CodecTest.expect(CodecCsvText.parse(CodecCsvText.format([[s, "", "tail"]]))) == [[s, "", "tail"]])
+  end
+end

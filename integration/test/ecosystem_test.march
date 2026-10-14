@@ -1,0 +1,55 @@
+mod FinanceEcosystemTest do
+  pfn expect(r : Result(a, e)) : a do
+    match r do
+      Ok(v) -> v
+      Err(_) -> panic("ecosystem integration failure")
+    end
+  end
+  pfn account(id : String, kind : LedgerAccount.Kind, a : FinanceAsset.Asset) do expect(LedgerAccount.make(id, kind, a)) end
+  pfn balance(l : LedgerJournal.Ledger, id : String) do FinanceAmount.format(expect(LedgerJournal.balance(l, id))) end
+
+  test "all four libraries preserve exact crypto events history replay and reversal across both formats" do
+    let n = expect(CryptoIdentity.network("integration", "main"))
+    let token = expect(CryptoIdentity.token(n, "token", 6))
+    let native = expect(CryptoIdentity.native(n, 18))
+    let ta = CryptoIdentity.core_asset(token)
+    let na = CryptoIdentity.core_asset(native)
+    let sender = account("sender", LedgerAccount.AssetAccount, ta)
+    let receiver = account("receiver", LedgerAccount.AssetAccount, ta)
+    let funding = account("gas-wallet", LedgerAccount.AssetAccount, na)
+    let expense = account("gas-expense", LedgerAccount.ExpenseAccount, na)
+    let initial = expect(LedgerJournal.new([sender, receiver, funding, expense]))
+    let q = expect(FinanceAmount.parse(ta, "12345678901234567890.123456"))
+    let principal = expect(CryptoIdentity.amount(token, q))
+    let feeq = expect(FinanceAmount.parse(na, "0.000000000000000001"))
+    let fee = expect(CryptoFee.make(CryptoFee.Gas, expect(CryptoIdentity.amount(native, feeq)), funding, expense))
+    let ref = expect(CryptoReference.on_chain(n, "transaction", "log-0"))
+    let ctx = expect(CryptoEvent.context("transfer", ref, "ecosystem", 100, 101))
+    let event = expect(CryptoEvent.transfer(ctx, principal, sender, receiver, Some(fee)))
+    let v = expect(LedgerJournal.validate(initial, CryptoEvent.draft(event)))
+    let (posted, _) = expect(LedgerJournal.post_validated(initial, v))
+    let json = expect(CodecJson.decode_journal(CodecJson.encode_journal(posted)))
+    let (accounts, postings) = CodecCsv.encode_journal(json)
+    let restored = expect(CodecCsv.decode_journal(accounts, postings))
+    assert (balance(restored, "sender") == "-12345678901234567890.123456")
+    assert (balance(restored, "receiver") == "12345678901234567890.123456")
+    assert (balance(restored, "gas-wallet") == "-0.000000000000000001")
+    assert (balance(restored, "gas-expense") == "0.000000000000000001")
+    assert (CodecJson.encode_journal(restored) == CodecJson.encode_journal(posted))
+    let (retried, original) = expect(LedgerJournal.post(restored, CryptoEvent.draft(event)))
+    assert (LedgerJournal.count(retried) == 1)
+    let m = expect(FinanceMetadata.make("ecosystem", 102, 103, Some("undo")))
+    let (undone, _) = expect(LedgerJournal.reverse(retried, original, "undo", m))
+    let (ua, up) = CodecCsv.encode_journal(undone)
+    let undo_csv = expect(CodecCsv.decode_journal(ua, up))
+    let undo_json = expect(CodecJson.decode_journal(CodecJson.encode_journal(undo_csv)))
+    assert (LedgerJournal.count(undo_json) == 2)
+    assert (balance(undo_json, "sender") == "0.000000")
+    assert (balance(undo_json, "receiver") == "0.000000")
+    assert (balance(undo_json, "gas-wallet") == "0.000000000000000000")
+    assert (balance(undo_json, "gas-expense") == "0.000000000000000000")
+    assert (CodecJson.encode_journal(undo_json) == CodecJson.encode_journal(undone))
+    let q2 = expect(CodecJson.decode_quantity(FinanceCodec.encode(q)))
+    assert (BigInt.eq(FinanceAmount.atoms(q), FinanceAmount.atoms(q2)))
+  end
+end

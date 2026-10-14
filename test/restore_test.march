@@ -1,0 +1,61 @@
+mod CodecRestoreTest do
+  needs IO.Clock, IO.Process
+  test "reversal snapshots reject missing forward self and edited links" do
+    let first = CodecTest.draft("first", 123, Some("event"))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(first, Some("missing"))])))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(first, Some("first"))])))
+    let undo = match LedgerJournal.entries(CodecTest.reversed(123)) do
+      Cons(_, Cons(p, Nil)) -> LedgerJournal.draft(p)
+      _ -> panic("expected reversal")
+    end
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(undo, Some("first")), (first, None)])))
+    let wrong = CodecTest.draft("undo", 124, None)
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(first, None), (wrong, Some("first"))])))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(first, None), (first, Some("first"))])))
+    let restored = CodecTest.expect(CodecJournal.restore(CodecTest.accounts(), [(first, None), (undo, Some("first"))]))
+    assert (CodecTest.balance(restored) == "0.00")
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(first, None), (undo, Some("first")), (undo, Some("first"))])))
+  end
+  test "restored histories retain reversal-of-reversal and future replay behavior" do
+    let l = CodecTest.reversed(123)
+    let reversal = match LedgerJournal.entries(l) do
+      Cons(_, Cons(p, Nil)) -> p
+      _ -> panic("expected reversal")
+    end
+    let m = CodecTest.expect(FinanceMetadata.make("redo", 104, 105, Some("redo")))
+    let (redo, _) = CodecTest.expect(LedgerJournal.reverse(l, reversal, "redo", m))
+    let (a, p) = CodecCsv.encode_journal(redo)
+    let restored = CodecTest.expect(CodecCsv.decode_journal(a, p))
+    assert (CodecTest.balance(restored) == "1.23")
+    assert (LedgerJournal.count(restored) == 3)
+    assert (CodecJson.encode_journal(restored) == CodecJson.encode_journal(redo))
+    let (retry, _) = CodecTest.expect(LedgerJournal.post(restored, CodecTest.draft("first", 123, Some("event,\"1\"\nend"))))
+    assert (LedgerJournal.count(retry) == 3)
+  end
+  test "draft decode does not claim validity but snapshot import validates it" do
+    let m = CodecTest.expect(FinanceMetadata.make("draft", 100, 101, None))
+    let empty = CodecTest.expect(LedgerEntry.draft("empty", m))
+    let d = CodecTest.expect(CodecJson.decode_draft(CodecJson.encode_draft(empty)))
+    Test.assert_true(List.is_empty(LedgerEntry.postings(d)), "empty draft changed during decode")
+    Test.assert_true(Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(d, None)])), "empty snapshot entry accepted")
+    let unknown = CodecTest.expect(LedgerEntry.posting("missing", LedgerEntry.Debit, FinanceAmount.from_atoms(CodecTest.usd(), BigInt.one())))
+    let invalid = LedgerEntry.add(CodecTest.draft("bad", 1, None), unknown)
+    Test.assert_true(Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(invalid, None)])), "unknown account accepted")
+    let accounts = CodecTest.accounts()
+    Test.assert_true(Result.is_err(CodecJournal.restore(List.append(accounts, accounts), Nil)), "duplicate chart accepted")
+  end
+  test "strict JSON rejects malformed roots arrays optionals nested keys and integer overflow" do
+    List.each(["null", "[]", "{\"version\":\"1\",\"accounts\":[],\"entries\":[],\"extra\":0}",
+      "{\"version\":\"1\",\"accounts\":null,\"entries\":[]}",
+      "{\"version\":1,\"accounts\":[],\"entries\":[]}"],
+      fn text -> assert (Result.is_err(CodecJson.decode_journal(text))))
+    let d = CodecJson.draft_value(CodecTest.draft("first", 1, None))
+    List.each([Json.Str(""), Json.Number(1.0), Json.Bool(false)], fn bad ->
+      assert (Result.is_err(CodecJson.draft_from_value(CodecTest.replace(d, "external_id", bad)))))
+    List.each(["00", "-0", "+1", " 1", "1e2", "999999999999999999999999999"], fn s ->
+      assert (Result.is_err(CodecWire.integer(s))))
+    let p = Json.Object([("account", Json.Str("cash")), ("account", Json.Str("equity")),
+      ("direction", Json.Str("debit")), ("quantity", CodecJson.quantity_value(FinanceAmount.from_atoms(CodecTest.usd(), BigInt.one())))])
+    assert (Result.is_err(CodecJson.posting_from_value(p)))
+  end
+end

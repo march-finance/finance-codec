@@ -1,0 +1,57 @@
+mod CodecCsvTest do
+  needs IO.Clock, IO.Process
+  test "CSV lexical roundtrip preserves quotes commas empty cells Unicode and newlines" do
+    let rows = [["plain", "a,b", "quote\"text", "line\r\nnext", "é", ""], ["", "tail"]]
+    let restored = CodecTest.expect(CodecCsvText.parse(CodecCsvText.format(rows)))
+    assert (restored == rows)
+    assert (CodecTest.expect(CodecCsvText.parse("a,b\n1,2\n")) == [["a", "b"], ["1", "2"]])
+    assert (CodecTest.expect(CodecCsvText.parse("a,b\r\n1,2")) == [["a", "b"], ["1", "2"]])
+    assert (CodecTest.expect(CodecCsvText.parse("")) == Nil)
+    assert (CodecTest.expect(CodecCsvText.parse(",")) == [["", ""]])
+  end
+  test "CSV rejects unterminated quotes bare quotes trailing garbage and bare CR" do
+    List.each(["\"unclosed", "a\"b,c", "\"a\"junk,b", "a\rb", "\"a\" \n"],
+      fn s -> assert (Result.is_err(CodecCsvText.parse(s))))
+  end
+  test "journal CSV restores multiline metadata optional IDs and linked reversals" do
+    let l = CodecTest.reversed(123)
+    let (accounts, postings) = CodecCsv.encode_journal(l)
+    let restored = CodecTest.expect(CodecCsv.decode_journal(accounts, postings))
+    assert (CodecTest.balance(restored) == "0.00")
+    assert (LedgerJournal.count(restored) == 2)
+    let (a2, p2) = CodecCsv.encode_journal(restored)
+    assert (a2 == accounts)
+    assert (p2 == postings)
+    assert (CodecJson.encode_journal(restored) == CodecJson.encode_journal(l))
+  end
+  test "empty journals retain account charts and header-only tables" do
+    let empty = CodecTest.expect(LedgerJournal.new(Nil))
+    let (a, p) = CodecCsv.encode_journal(empty)
+    let restored = CodecTest.expect(CodecCsv.decode_journal(a, p))
+    assert (LedgerJournal.count(restored) == 0)
+    assert (List.is_empty(LedgerJournal.accounts(restored)))
+    let chart = CodecTest.expect(LedgerJournal.new(CodecTest.accounts()))
+    let (ca, cp) = CodecCsv.encode_journal(chart)
+    let result = CodecTest.expect(CodecCsv.decode_journal(ca, cp))
+    assert (CodecTest.balance(result) == "0.00")
+  end
+  test "CSV headers widths versions indexes flags and repeated metadata are strict" do
+    let (a, p) = CodecCsv.encode_journal(CodecTest.journal(123))
+    assert (Result.is_err(CodecCsv.decode_journal(String.replace(a, "account_id", "unknown"), p)))
+    assert (Result.is_err(CodecCsv.decode_journal(a, p ++ "extra,row\r\n")))
+    let rows = CodecTest.expect(CodecCsvText.parse(p))
+    let (header, first, second) = match rows do
+      Cons(h, Cons(f, Cons(s, Nil))) -> (h, f, s)
+      _ -> panic("expected two postings")
+    end
+    assert (Result.is_err(CodecCsv.decode_journal(a, CodecCsvText.format([header, second, first]))))
+    let mutate = fn (row, index, value) -> List.map(List.enumerate(row), fn item ->
+      let (i, s) = item
+      if i == index do value else s end)
+    List.each([(0, "2"), (1, "1"), (1, "00"), (9, "2"), (6, "false"), (7, "different"), (3, "other-source")], fn pair ->
+      let (index, value) = pair
+      let bad = mutate(second, index, value)
+      assert (Result.is_err(CodecCsv.decode_journal(a, CodecCsvText.format([header, first, bad])))))
+    assert (Result.is_err(CodecCsv.decode_journal(a, CodecCsvText.format([header, first, second, first, second]))))
+  end
+end
