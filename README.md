@@ -1,5 +1,28 @@
 # finance-codec
 
+[![Tests](https://github.com/march-finance/finance-codec/actions/workflows/ci.yml/badge.svg)](https://github.com/march-finance/finance-codec/actions/workflows/ci.yml)
+
+Licensed under the [MIT License](LICENSE).
+
+## GitHub checkout and CI
+
+Clone the repositories into the same parent directory so Forge's sibling path
+dependencies resolve (finance-crypto is test-only for finance-codec integration):
+
+```sh
+git clone https://github.com/march-finance/finance-core.git
+git clone https://github.com/march-finance/finance-ledger.git
+git clone https://github.com/march-finance/finance-crypto.git
+git clone https://github.com/march-finance/finance-codec.git
+cd finance-codec
+forge test --seed=42
+```
+
+GitHub Actions runs on pushes, pull requests and manual dispatches. It installs
+the pinned March 0.5.0 release, checks/builds this package, and runs debug/release
+tests and properties. Dependencies are checked out from their `main` branches.
+The workflow also tests all four libraries together via the integration consumer.
+
 Strict, exact JSON and CSV interchange for March finance data. Version 0.1.0,
 pinned to March 0.5.0. Production dependencies: sibling `finance-core` and
 `finance-ledger`. No dependency on finance-crypto; its ledger event references

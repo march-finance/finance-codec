@@ -3,6 +3,7 @@ name = "finance-codec"
 version = "0.1.0"
 type = "lib"
 description = "Strict exact JSON and CSV finance journal interchange"
+license = "MIT"
 
 [deps]
 finance-core = { path = "../finance-core" }
