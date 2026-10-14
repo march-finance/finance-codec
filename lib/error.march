@@ -1,3 +1,14 @@
+-- CodecError — Structured wire, restoration and wrapped domain errors for finance-codec.
+-- First rejected layer determines the variant; callers should not rely on one specific
+-- diagnostic for multiply-invalid input.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CodecError do
+  -- InvalidEncoding: JSON/schema/type; UnsupportedVersion: unsupported wire version;
+  -- InvalidInteger: noncanonical/out-of-range Int; InvalidCsv: syntax/table shape;
+  -- DuplicateEntry: restoration would merge; InvalidReversal: missing/forward target or
+  -- altered compensation; Core(error)/Ledger(error): dependency validation. Quantity schema
+  -- failures may be wrapped Core(InvalidEncoding).
   type Error = InvalidEncoding | UnsupportedVersion | InvalidInteger | InvalidCsv | DuplicateEntry | InvalidReversal | Core(FinanceError.Error) | Ledger(LedgerError.Error)
 end

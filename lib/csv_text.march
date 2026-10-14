@@ -1,3 +1,9 @@
+-- CodecCsvText — Pure strict CSV parsing/formatting helpers independent of financial
+-- schemas. Supports comma separators, quoted multiline cells and doubled quotes, without
+-- dialect detection, spreadsheet sanitization or resource budgets.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CodecCsvText do
   ptype CsvMode = CellStart | CellBare | CellQuoted | CellClosed
 
@@ -31,8 +37,19 @@ mod CodecCsvText do
       end
     end
   end
-  doc "Pure strict CSV: LF/CRLF rows, quoted multiline fields, doubled quote escapes."
+  doc """
+  Parse s into ordered rows/cells. Accept LF or CRLF records and quoted
+  multiline/doubled-quote cells. InvalidCsv for bare quotes, unclosed quoted fields, text
+  after a closing quote or bare CR outside quotes. Empty input yields no rows. Does not
+  enforce equal widths or headers.
+  """
   fn parse(s : String) : Result(List(List(String)), CodecError.Error) do go(string_chars(s), CellStart, Nil, Nil, Nil, false) end
+  doc """
+  Return all-quoted comma-separated cells with doubled quotes and CRLF after each row.
+  Empty row list yields empty string. Infallible; use rows containing at least one cell
+  for reversible tabular interchange (a zero-cell row is indistinguishable from one empty
+  cell on parse). Does not sanitize formulas or validate row widths.
+  """
   fn format(rows : List(List(String))) : String do
     if List.is_empty(rows) do "" else
       String.join(List.map(rows, fn row -> String.join(List.map(row, fn field -> "\"" ++ String.replace_all(field, "\"", "\"\"") ++ "\""), ",")), "\r\n") ++ "\r\n"

@@ -1,3 +1,9 @@
+-- CodecJournal — Reconstruct ordered immutable snapshots through public ledger
+-- posting/reversal operations. Unlike live posting, restoration requires every input entry
+-- to append exactly once; duplicate events are errors rather than merged retries.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CodecJournal do
   pfn append(l : LedgerJournal.Ledger, item : (LedgerEntry.Draft, Option(String))) : Result(LedgerJournal.Ledger, CodecError.Error) do
     let (d, link) = item
@@ -23,7 +29,13 @@ mod CodecJournal do
         restore_entries(next, rest)
     end
   end
-  doc "Rebuild an ordered snapshot using public ledger operations; never merge duplicate events."
+  doc """
+  Create chart from accounts and replay ordered (Draft, optional original ID) pairs. None
+  posts normally; Some(id) reverses a previously restored target and verifies supplied
+  draft content/link. Return DuplicateEntry for merged retries, InvalidReversal for
+  missing/forward/altered links, or Ledger(error) for chart/post/reversal failures.
+  All-or-error; no input mutation, persistence or authenticity guarantee.
+  """
   fn restore(accounts : List(LedgerAccount.Account), entries : List((LedgerEntry.Draft, Option(String)))) : Result(LedgerJournal.Ledger, CodecError.Error) do
     let? l = Result.map_err(LedgerJournal.new(accounts), fn e -> CodecError.Ledger(e))
     restore_entries(l, entries)

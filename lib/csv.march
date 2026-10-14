@@ -1,7 +1,22 @@
+-- CodecCsv — Exact journal snapshots as separate account and posting CSV tables. Fixed v1
+-- headers and contiguous zero-based indexes preserve ordered history. Pure string
+-- interchange, not spreadsheet-safe export or a streaming/file API.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CodecCsv do
   ptype PostingRow = PostingRowValue(Int, List(String), LedgerEntry.Draft, Option(String), Int, LedgerEntry.Posting)
 
+  doc """
+  Return ordered v1 account column names: version, account_id, kind, asset, precision.
+  Infallible; encoder/decoder require this exact order.
+  """
   fn account_header() : List(String) do ["version", "account_id", "kind", "asset", "precision"] end
+  doc """
+  Return ordered v1 posting column names, including entry/posting indexes, repeated
+  provenance, external-ID flag, reversal link and exact quantity fields. Infallible; do
+  not independently reorder rows or columns.
+  """
   fn posting_header() : List(String) do ["version", "entry_index", "entry_id", "source", "effective", "recorded", "has_external_id", "external_id", "reversal_of", "posting_index", "account_id", "direction", "asset", "precision", "amount"] end
   pfn optional_text(s : Option(String)) : String do
     match s do
@@ -25,6 +40,12 @@ mod CodecCsv do
       let a = FinanceAmount.quantity_asset(q)
       List.append(prefix, [int_to_string(i), LedgerEntry.account(posting), CodecJson.direction_text(LedgerEntry.direction(posting)), FinanceAsset.asset_id(a), int_to_string(FinanceAsset.precision(a)), FinanceAmount.format(q)]))
   end
+  doc """
+  Return (accounts CSV, postings CSV) for l. Quote all cells, double embedded quotes and
+  use CRLF rows. Preserve entry/posting order and exact native decimal amounts; empty
+  tables retain headers. Infallible; strings starting with spreadsheet formulas are NOT
+  sanitized.
+  """
   fn encode_journal(l : LedgerJournal.Ledger) : (String, String) do
     let accounts = Cons(account_header(), List.map(LedgerJournal.accounts(l), account_row))
     let rows = List.flat_map(List.enumerate(LedgerJournal.entries(l)), fn item -> let (i, p) = item posting_rows(i, p))
@@ -87,6 +108,13 @@ mod CodecCsv do
       end
     end
   end
+  doc """
+  Decode the two v1 CSV tables and restore a full journal. Require exact headers, row
+  widths, contiguous zero-based ordered indexes and consistent repeated metadata. Reject
+  CSV/schema errors, duplicate/replayed entries and invalid reversal histories; propagate
+  InvalidCsv, wire/domain or wrapped errors. No partial result; caller owns input limits
+  and atomic persistence.
+  """
   fn decode_journal(accounts_csv : String, postings_csv : String) : Result(LedgerJournal.Ledger, CodecError.Error) do
     let? account_rows = table(accounts_csv, account_header())
     let? accounts = Result.collect(List.map(account_rows, account_from_row))

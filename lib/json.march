@@ -1,14 +1,42 @@
+-- CodecJson — Strict JSON v1 for exact quantities, accounts, drafts and ordered journal
+-- snapshots. Numeric financial fields use strings. Constructors validate domain input;
+-- journal restoration replays accounting invariants. Pure, unbounded in-memory decoding:
+-- callers own IO, resource limits and trust.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CodecJson do
+  doc """
+  Encode q using core-compatible JSON v1 with string version, asset, precision and
+  full-precision amount. Infallible and exact; no Float conversion.
+  """
   fn encode_quantity(q : FinanceAmount.Quantity) : String do FinanceCodec.encode(q) end
+  doc """
+  Decode strict core-compatible quantity JSON; wrap all FinanceCodec errors in
+  Core(error), including its InvalidEncoding for unsupported quantity versions. Signed
+  amounts are allowed. No rounding occurs.
+  """
   fn decode_quantity(s : String) : Result(FinanceAmount.Quantity, CodecError.Error) do
     Result.map_err(FinanceCodec.decode(s), fn e -> CodecError.Core(e))
   end
+  doc """
+  Return q's core-compatible quantity JsonValue object with four string fields.
+  Infallible; this helper does not serialize to text or add journal context.
+  """
   fn quantity_value(q : FinanceAmount.Quantity) : Json.JsonValue do
     let a = FinanceAmount.quantity_asset(q)
     Json.Object([("version", Json.Str("1")), ("asset", Json.Str(FinanceAsset.asset_id(a))),
       ("precision", Json.Str(int_to_string(FinanceAsset.precision(a)))), ("amount", Json.Str(FinanceAmount.format(q)))])
   end
+  doc """
+  Decode quantity JsonValue j via the core-compatible schema. Return validated Quantity or
+  Core(error); enforce exact fields, types and decimal precision, not positivity.
+  """
   fn quantity_from_value(j : Json.JsonValue) : Result(FinanceAmount.Quantity, CodecError.Error) do decode_quantity(Json.to_string(j)) end
+  doc """
+  Return canonical lowercase account kind: asset, liability, equity, income or expense.
+  Infallible for a valid Kind.
+  """
   fn kind_text(k : LedgerAccount.Kind) : String do
     match k do
       LedgerAccount.AssetAccount -> "asset"
@@ -18,6 +46,10 @@ mod CodecJson do
       LedgerAccount.ExpenseAccount -> "expense"
     end
   end
+  doc """
+  Decode exact lowercase account-kind text; unknown spelling/case returns InvalidEncoding.
+  Does not infer presentation sign or custody location.
+  """
   fn parse_kind(s : String) : Result(LedgerAccount.Kind, CodecError.Error) do
     match s do
       "asset" -> Ok(LedgerAccount.AssetAccount)
@@ -28,11 +60,20 @@ mod CodecJson do
       _ -> Err(CodecError.InvalidEncoding)
     end
   end
+  doc """
+  Return JSON v1 object for a with id, lowercase kind, asset identity and string
+  precision. Infallible; does not serialize history or balance.
+  """
   fn account_value(a : LedgerAccount.Account) : Json.JsonValue do
     let asset = LedgerAccount.asset(a)
     Json.Object([("version", Json.Str("1")), ("id", Json.Str(LedgerAccount.id(a))), ("kind", Json.Str(kind_text(LedgerAccount.kind(a)))),
       ("asset", Json.Str(FinanceAsset.asset_id(asset))), ("precision", Json.Str(int_to_string(FinanceAsset.precision(asset))))])
   end
+  doc """
+  Decode strict account JsonValue with exact fields/version/string precision. Return
+  InvalidEncoding, UnsupportedVersion, InvalidInteger, Core(asset error) or Ledger(account
+  error) as applicable. Does not enforce chart-wide ID uniqueness.
+  """
   fn account_from_value(j : Json.JsonValue) : Result(LedgerAccount.Account, CodecError.Error) do
     let? _ = CodecWire.object(j, ["version", "id", "kind", "asset", "precision"])
     let? _ = CodecWire.version(j)
@@ -45,12 +86,20 @@ mod CodecJson do
     let? asset = Result.map_err(FinanceAsset.asset(asset_id, places), fn e -> CodecError.Core(e))
     Result.map_err(LedgerAccount.make(id, kind, asset), fn e -> CodecError.Ledger(e))
   end
+  doc """
+  Return lowercase "debit" or "credit" for d. Infallible; stored posting amount remains
+  positive.
+  """
   fn direction_text(d : LedgerEntry.Direction) : String do
     match d do
       LedgerEntry.Debit -> "debit"
       LedgerEntry.Credit -> "credit"
     end
   end
+  doc """
+  Decode exact lowercase "debit"/"credit"; unknown spelling returns InvalidEncoding. No
+  sign inference from amount is performed.
+  """
   fn parse_direction(s : String) : Result(LedgerEntry.Direction, CodecError.Error) do
     match s do
       "debit" -> Ok(LedgerEntry.Debit)
@@ -58,10 +107,19 @@ mod CodecJson do
       _ -> Err(CodecError.InvalidEncoding)
     end
   end
+  doc """
+  Return posting JSON object with account, lowercase direction and nested quantity v1.
+  Infallible; no version field is added at posting-object level.
+  """
   fn posting_value(p : LedgerEntry.Posting) : Json.JsonValue do
     Json.Object([("account", Json.Str(LedgerEntry.account(p))), ("direction", Json.Str(direction_text(LedgerEntry.direction(p)))),
       ("quantity", quantity_value(LedgerEntry.quantity(p)))])
   end
+  doc """
+  Decode exact posting fields account/direction/quantity and use LedgerEntry.posting.
+  InvalidEncoding for shape/direction; nested quantity errors use Core; invalid
+  ID/nonpositive amount use Ledger. Does not validate chart membership.
+  """
   fn posting_from_value(j : Json.JsonValue) : Result(LedgerEntry.Posting, CodecError.Error) do
     let? _ = CodecWire.object(j, ["account", "direction", "quantity"])
     let? id = CodecWire.text(j, "account")
@@ -71,12 +129,23 @@ mod CodecJson do
     let? q = quantity_from_value(qj)
     Result.map_err(LedgerEntry.posting(id, direction, q), fn e -> CodecError.Ledger(e))
   end
+  doc """
+  Return draft JSON v1 including id, source, string UTC times, nullable external_id and
+  ordered postings. Infallible; draft may be incomplete/unbalanced until checked against a
+  chart.
+  """
   fn draft_value(d : LedgerEntry.Draft) : Json.JsonValue do
     let m = LedgerEntry.metadata(d)
     Json.Object([("version", Json.Str("1")), ("id", Json.Str(LedgerEntry.id(d))), ("source", Json.Str(FinanceMetadata.source(m))),
       ("effective", Json.Str(int_to_string(FinanceMetadata.effective(m)))), ("recorded", Json.Str(int_to_string(FinanceMetadata.recorded(m)))),
       ("external_id", CodecWire.option_value(FinanceMetadata.external_id(m))), ("postings", Json.Array(List.map(LedgerEntry.postings(d), posting_value)))])
   end
+  doc """
+  Decode strict draft JSON with canonical Int timestamps, metadata and ordered postings.
+  Propagate wire errors, Core(metadata/quantity errors) and Ledger(constructor errors).
+  Does not prove account membership or per-asset balance; validate against a destination
+  chart.
+  """
   fn draft_from_value(j : Json.JsonValue) : Result(LedgerEntry.Draft, CodecError.Error) do
     let? _ = CodecWire.object(j, ["version", "id", "source", "effective", "recorded", "external_id", "postings"])
     let? _ = CodecWire.version(j)
@@ -95,12 +164,29 @@ mod CodecJson do
     let? ps = Result.collect(List.map(ps_array, posting_from_value))
     Ok(List.fold_left(ps, d, LedgerEntry.add))
   end
+  doc """
+  Serialize a using account JSON v1: version/id/kind/asset/precision. Infallible and
+  deterministic for the supplied value; not proof that account IDs are unique in a chart.
+  """
   fn encode_account(a : LedgerAccount.Account) : String do Json.to_string(account_value(a)) end
+  doc """
+  Parse s and decode one strict account using account_from_value. Return wire, Core or
+  Ledger errors; does not validate journal-wide uniqueness or balances.
+  """
   fn decode_account(s : String) : Result(LedgerAccount.Account, CodecError.Error) do
     let? j = CodecWire.parse(s)
     account_from_value(j)
   end
+  doc """
+  Serialize d using draft JSON v1 and original posting order. Infallible; no validation
+  against an account chart and no reversal link is invented.
+  """
   fn encode_draft(d : LedgerEntry.Draft) : String do Json.to_string(draft_value(d)) end
+  doc """
+  Parse and decode one draft, preserving ordered postings and metadata. Return wire, Core
+  or Ledger errors; a successful result can still be unbalanced or reference unknown
+  accounts. Validate before posting.
+  """
   fn decode_draft(s : String) : Result(LedgerEntry.Draft, CodecError.Error) do
     let? j = CodecWire.parse(s)
     draft_from_value(j)
@@ -116,10 +202,22 @@ mod CodecJson do
     let? link = CodecWire.optional(rj)
     Ok((d, link))
   end
+  doc """
+  Serialize l as JSON v1 accounts plus append-ordered entries, including each draft and
+  nullable reversal_of. Infallible; retain full history rather than net balances. No
+  signature or tamper evidence is added.
+  """
   fn encode_journal(l : LedgerJournal.Ledger) : String do
     Json.to_string(Json.Object([("version", Json.Str("1")), ("accounts", Json.Array(List.map(LedgerJournal.accounts(l), account_value))),
       ("entries", Json.Array(List.map(LedgerJournal.entries(l), entry_value)))]))
   end
+  doc """
+  Decode strict ordered journal snapshot and restore via public ledger operations. Reject
+  malformed fields/versions, duplicate events (never merge retries), missing/forward
+  reversal targets and altered reversal content. Return wire errors, DuplicateEntry,
+  InvalidReversal or wrapped Core/Ledger errors; no partial journal is returned. Bound
+  untrusted input before calling.
+  """
   fn decode_journal(s : String) : Result(LedgerJournal.Ledger, CodecError.Error) do
     let? j = CodecWire.parse(s)
     let? _ = CodecWire.object(j, ["version", "accounts", "entries"])
