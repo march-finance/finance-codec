@@ -1,0 +1,56 @@
+mod CodecJsonTest do
+  needs IO.Clock, IO.Process
+  test "quantity encoding remains compatible with core exact string schema" do
+    let q = CodecTest.expect(FinanceAmount.parse(CodecTest.usd(), "12345678901234567890.12"))
+    assert (CodecJson.encode_quantity(q) == FinanceCodec.encode(q))
+    let result = CodecTest.expect(CodecJson.decode_quantity(FinanceCodec.encode(q)))
+    assert (FinanceAmount.format(result) == "12345678901234567890.12")
+  end
+  test "account and draft JSON preserve exact domain values" do
+    let a = CodecTest.expect(CodecJson.decode_account("{\"version\":\"1\",\"id\":\"cash\",\"kind\":\"asset\",\"asset\":\"fiat:USD\",\"precision\":\"2\"}"))
+    assert (LedgerAccount.id(a) == "cash")
+    assert (FinanceAsset.precision(LedgerAccount.asset(a)) == 2)
+    let restored_a = CodecTest.expect(CodecJson.decode_account(CodecJson.encode_account(a)))
+    assert (LedgerAccount.id(restored_a) == "cash")
+    let d = CodecTest.draft("first", 123, None)
+    let restored = CodecTest.expect(CodecJson.decode_draft(CodecJson.encode_draft(d)))
+    assert (LedgerEntry.id(restored) == "first")
+    assert (LedgerEntry.same(d, restored))
+    assert (FinanceMetadata.external_id(LedgerEntry.metadata(restored)) == None)
+  end
+  test "journal JSON preserves history and reversal links" do
+    let l = CodecTest.reversed(123)
+    let text = CodecJson.encode_journal(l)
+    let restored = CodecTest.expect(CodecJson.decode_journal(text))
+    assert (LedgerJournal.count(restored) == 2)
+    assert (CodecTest.balance(restored) == "0.00")
+    assert (CodecJson.encode_journal(restored) == text)
+  end
+  test "JSON rejects wrong versions duplicate keys unknown fields and numeric amounts" do
+    List.each([
+      "{\"version\":\"2\",\"id\":\"cash\",\"kind\":\"asset\",\"asset\":\"fiat:USD\",\"precision\":\"2\"}",
+      "{\"version\":\"1\",\"id\":\"cash\",\"id\":\"other\",\"kind\":\"asset\",\"asset\":\"fiat:USD\",\"precision\":\"2\"}",
+      "{\"version\":\"1\",\"id\":\"cash\",\"kind\":\"asset\",\"asset\":\"fiat:USD\",\"precision\":\"02\"}",
+      "{\"version\":\"1\",\"id\":\"cash\",\"kind\":\"other\",\"asset\":\"fiat:USD\",\"precision\":\"2\"}",
+      "{\"version\":\"1\",\"id\":\"cash\",\"kind\":\"asset\",\"asset\":\"fiat:USD\",\"precision\":2}"
+    ], fn s -> assert (Result.is_err(CodecJson.decode_account(s))))
+    assert (Result.is_err(CodecJson.decode_quantity("{\"version\":\"1\",\"asset\":\"fiat:USD\",\"precision\":\"2\",\"amount\":1.25}")))
+    let d = CodecTest.expect(Json.parse(CodecJson.encode_draft(CodecTest.draft("first", 1, None))))
+    let bad = CodecTest.replace(d, "effective", Json.Str("+100"))
+    assert (Result.is_err(CodecJson.decode_draft(Json.to_string(bad))))
+    let unknown = match d do
+      Json.Object(fields) -> Json.Object(Cons(("extra", Json.Null), fields))
+      _ -> panic("expected object")
+    end
+    assert (Result.is_err(CodecJson.decode_draft(Json.to_string(unknown))))
+  end
+  test "restoration rejects unbalanced drafts and does not silently merge duplicate events" do
+    let d = CodecTest.draft("first", 1, Some("event"))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(d, None), (d, None)])))
+    let alias_draft = CodecTest.draft("different-id", 1, Some("event"))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(d, None), (alias_draft, None)])))
+    let q = FinanceAmount.from_atoms(CodecTest.usd(), BigInt.one())
+    let extra = CodecTest.expect(LedgerEntry.posting("cash", LedgerEntry.Debit, q))
+    assert (Result.is_err(CodecJournal.restore(CodecTest.accounts(), [(LedgerEntry.add(d, extra), None)])))
+  end
+end

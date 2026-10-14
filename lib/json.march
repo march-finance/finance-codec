@@ -1,0 +1,135 @@
+mod CodecJson do
+  fn encode_quantity(q : FinanceAmount.Quantity) : String do FinanceCodec.encode(q) end
+  fn decode_quantity(s : String) : Result(FinanceAmount.Quantity, CodecError.Error) do
+    Result.map_err(FinanceCodec.decode(s), fn e -> CodecError.Core(e))
+  end
+  fn quantity_value(q : FinanceAmount.Quantity) : Json.JsonValue do
+    let a = FinanceAmount.quantity_asset(q)
+    Json.Object([("version", Json.Str("1")), ("asset", Json.Str(FinanceAsset.asset_id(a))),
+      ("precision", Json.Str(int_to_string(FinanceAsset.precision(a)))), ("amount", Json.Str(FinanceAmount.format(q)))])
+  end
+  fn quantity_from_value(j : Json.JsonValue) : Result(FinanceAmount.Quantity, CodecError.Error) do decode_quantity(Json.to_string(j)) end
+  fn kind_text(k : LedgerAccount.Kind) : String do
+    match k do
+      LedgerAccount.AssetAccount -> "asset"
+      LedgerAccount.LiabilityAccount -> "liability"
+      LedgerAccount.EquityAccount -> "equity"
+      LedgerAccount.IncomeAccount -> "income"
+      LedgerAccount.ExpenseAccount -> "expense"
+    end
+  end
+  fn parse_kind(s : String) : Result(LedgerAccount.Kind, CodecError.Error) do
+    match s do
+      "asset" -> Ok(LedgerAccount.AssetAccount)
+      "liability" -> Ok(LedgerAccount.LiabilityAccount)
+      "equity" -> Ok(LedgerAccount.EquityAccount)
+      "income" -> Ok(LedgerAccount.IncomeAccount)
+      "expense" -> Ok(LedgerAccount.ExpenseAccount)
+      _ -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn account_value(a : LedgerAccount.Account) : Json.JsonValue do
+    let asset = LedgerAccount.asset(a)
+    Json.Object([("version", Json.Str("1")), ("id", Json.Str(LedgerAccount.id(a))), ("kind", Json.Str(kind_text(LedgerAccount.kind(a)))),
+      ("asset", Json.Str(FinanceAsset.asset_id(asset))), ("precision", Json.Str(int_to_string(FinanceAsset.precision(asset))))])
+  end
+  fn account_from_value(j : Json.JsonValue) : Result(LedgerAccount.Account, CodecError.Error) do
+    let? _ = CodecWire.object(j, ["version", "id", "kind", "asset", "precision"])
+    let? _ = CodecWire.version(j)
+    let? id = CodecWire.text(j, "id")
+    let? kind_string = CodecWire.text(j, "kind")
+    let? kind = parse_kind(kind_string)
+    let? asset_id = CodecWire.text(j, "asset")
+    let? places_string = CodecWire.text(j, "precision")
+    let? places = CodecWire.integer(places_string)
+    let? asset = Result.map_err(FinanceAsset.asset(asset_id, places), fn e -> CodecError.Core(e))
+    Result.map_err(LedgerAccount.make(id, kind, asset), fn e -> CodecError.Ledger(e))
+  end
+  fn direction_text(d : LedgerEntry.Direction) : String do
+    match d do
+      LedgerEntry.Debit -> "debit"
+      LedgerEntry.Credit -> "credit"
+    end
+  end
+  fn parse_direction(s : String) : Result(LedgerEntry.Direction, CodecError.Error) do
+    match s do
+      "debit" -> Ok(LedgerEntry.Debit)
+      "credit" -> Ok(LedgerEntry.Credit)
+      _ -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn posting_value(p : LedgerEntry.Posting) : Json.JsonValue do
+    Json.Object([("account", Json.Str(LedgerEntry.account(p))), ("direction", Json.Str(direction_text(LedgerEntry.direction(p)))),
+      ("quantity", quantity_value(LedgerEntry.quantity(p)))])
+  end
+  fn posting_from_value(j : Json.JsonValue) : Result(LedgerEntry.Posting, CodecError.Error) do
+    let? _ = CodecWire.object(j, ["account", "direction", "quantity"])
+    let? id = CodecWire.text(j, "account")
+    let? direction_string = CodecWire.text(j, "direction")
+    let? direction = parse_direction(direction_string)
+    let? qj = CodecWire.field(j, "quantity")
+    let? q = quantity_from_value(qj)
+    Result.map_err(LedgerEntry.posting(id, direction, q), fn e -> CodecError.Ledger(e))
+  end
+  fn draft_value(d : LedgerEntry.Draft) : Json.JsonValue do
+    let m = LedgerEntry.metadata(d)
+    Json.Object([("version", Json.Str("1")), ("id", Json.Str(LedgerEntry.id(d))), ("source", Json.Str(FinanceMetadata.source(m))),
+      ("effective", Json.Str(int_to_string(FinanceMetadata.effective(m)))), ("recorded", Json.Str(int_to_string(FinanceMetadata.recorded(m)))),
+      ("external_id", CodecWire.option_value(FinanceMetadata.external_id(m))), ("postings", Json.Array(List.map(LedgerEntry.postings(d), posting_value)))])
+  end
+  fn draft_from_value(j : Json.JsonValue) : Result(LedgerEntry.Draft, CodecError.Error) do
+    let? _ = CodecWire.object(j, ["version", "id", "source", "effective", "recorded", "external_id", "postings"])
+    let? _ = CodecWire.version(j)
+    let? id = CodecWire.text(j, "id")
+    let? source = CodecWire.text(j, "source")
+    let? effective_string = CodecWire.text(j, "effective")
+    let? effective = CodecWire.integer(effective_string)
+    let? recorded_string = CodecWire.text(j, "recorded")
+    let? recorded = CodecWire.integer(recorded_string)
+    let? external_value = CodecWire.field(j, "external_id")
+    let? external = CodecWire.optional(external_value)
+    let? m = Result.map_err(FinanceMetadata.make(source, effective, recorded, external), fn e -> CodecError.Core(e))
+    let? d = Result.map_err(LedgerEntry.draft(id, m), fn e -> CodecError.Ledger(e))
+    let? ps_value = CodecWire.field(j, "postings")
+    let? ps_array = CodecWire.array(ps_value)
+    let? ps = Result.collect(List.map(ps_array, posting_from_value))
+    Ok(List.fold_left(ps, d, LedgerEntry.add))
+  end
+  fn encode_account(a : LedgerAccount.Account) : String do Json.to_string(account_value(a)) end
+  fn decode_account(s : String) : Result(LedgerAccount.Account, CodecError.Error) do
+    let? j = CodecWire.parse(s)
+    account_from_value(j)
+  end
+  fn encode_draft(d : LedgerEntry.Draft) : String do Json.to_string(draft_value(d)) end
+  fn decode_draft(s : String) : Result(LedgerEntry.Draft, CodecError.Error) do
+    let? j = CodecWire.parse(s)
+    draft_from_value(j)
+  end
+  pfn entry_value(p : LedgerJournal.PostedEntry) : Json.JsonValue do
+    Json.Object([("draft", draft_value(LedgerJournal.draft(p))), ("reversal_of", CodecWire.option_value(LedgerJournal.reversal_of(p)))])
+  end
+  pfn entry_from_value(j : Json.JsonValue) : Result((LedgerEntry.Draft, Option(String)), CodecError.Error) do
+    let? _ = CodecWire.object(j, ["draft", "reversal_of"])
+    let? dj = CodecWire.field(j, "draft")
+    let? d = draft_from_value(dj)
+    let? rj = CodecWire.field(j, "reversal_of")
+    let? link = CodecWire.optional(rj)
+    Ok((d, link))
+  end
+  fn encode_journal(l : LedgerJournal.Ledger) : String do
+    Json.to_string(Json.Object([("version", Json.Str("1")), ("accounts", Json.Array(List.map(LedgerJournal.accounts(l), account_value))),
+      ("entries", Json.Array(List.map(LedgerJournal.entries(l), entry_value)))]))
+  end
+  fn decode_journal(s : String) : Result(LedgerJournal.Ledger, CodecError.Error) do
+    let? j = CodecWire.parse(s)
+    let? _ = CodecWire.object(j, ["version", "accounts", "entries"])
+    let? _ = CodecWire.version(j)
+    let? aj = CodecWire.field(j, "accounts")
+    let? a_array = CodecWire.array(aj)
+    let? accounts = Result.collect(List.map(a_array, account_from_value))
+    let? ej = CodecWire.field(j, "entries")
+    let? e_array = CodecWire.array(ej)
+    let? entries = Result.collect(List.map(e_array, entry_from_value))
+    CodecJournal.restore(accounts, entries)
+  end
+end

@@ -1,0 +1,57 @@
+mod CodecWire do
+  fn parse(s : String) : Result(Json.JsonValue, CodecError.Error) do Result.map_err(Json.parse(s), fn _ -> CodecError.InvalidEncoding) end
+  fn object(j : Json.JsonValue, fields : List(String)) : Result(Unit, CodecError.Error) do
+    let keys = match j do
+      Json.Object(pairs) -> List.map(pairs, fn pair -> let (k, _) = pair k)
+      _ -> Nil
+    end
+    if List.length(keys) == List.length(fields) && List.length(List.dedup(keys)) == List.length(keys) &&
+      List.all(fields, fn key -> List.any(keys, fn k -> key == k)) do Ok(())
+    else Err(CodecError.InvalidEncoding) end
+  end
+  fn field(j : Json.JsonValue, key : String) : Result(Json.JsonValue, CodecError.Error) do
+    match Json.get(j, key) do
+      Some(v) -> Ok(v)
+      None -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn string(j : Json.JsonValue) : Result(String, CodecError.Error) do
+    match j do
+      Json.Str(s) -> Ok(s)
+      _ -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn text(j : Json.JsonValue, key : String) : Result(String, CodecError.Error) do
+    let? v = field(j, key)
+    string(v)
+  end
+  fn optional(j : Json.JsonValue) : Result(Option(String), CodecError.Error) do
+    match j do
+      Json.Null -> Ok(None)
+      Json.Str(s) -> Ok(Some(s))
+      _ -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn option_value(value : Option(String)) : Json.JsonValue do
+    match value do
+      None -> Json.Null
+      Some(s) -> Json.Str(s)
+    end
+  end
+  fn array(j : Json.JsonValue) : Result(List(Json.JsonValue), CodecError.Error) do
+    match j do
+      Json.Array(xs) -> Ok(xs)
+      _ -> Err(CodecError.InvalidEncoding)
+    end
+  end
+  fn integer(s : String) : Result(Int, CodecError.Error) do
+    match string_to_int(s) do
+      Some(n) -> if int_to_string(n) == s do Ok(n) else Err(CodecError.InvalidInteger) end
+      None -> Err(CodecError.InvalidInteger)
+    end
+  end
+  fn version(j : Json.JsonValue) : Result(Unit, CodecError.Error) do
+    let? v = text(j, "version")
+    if v == "1" do Ok(()) else Err(CodecError.UnsupportedVersion) end
+  end
+end

@@ -1,0 +1,3 @@
+mod CodecError do
+  type Error = InvalidEncoding | UnsupportedVersion | InvalidInteger | InvalidCsv | DuplicateEntry | InvalidReversal | Core(FinanceError.Error) | Ledger(LedgerError.Error)
+end

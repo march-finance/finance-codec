@@ -1,0 +1,31 @@
+mod CodecJournal do
+  pfn append(l : LedgerJournal.Ledger, item : (LedgerEntry.Draft, Option(String))) : Result(LedgerJournal.Ledger, CodecError.Error) do
+    let (d, link) = item
+    let id = LedgerEntry.id(d)
+    let? result = match link do
+      None -> Result.map_err(LedgerJournal.post(l, d), fn e -> CodecError.Ledger(e))
+      Some(original_id) ->
+        match List.find(LedgerJournal.entries(l), fn p -> LedgerJournal.entry_id(p) == original_id) do
+          None -> Err(CodecError.InvalidReversal)
+          Some(original) -> Result.map_err(LedgerJournal.reverse(l, original, id, LedgerEntry.metadata(d)), fn e -> CodecError.Ledger(e))
+        end
+    end
+    let (next, posted) = result
+    if LedgerJournal.count(next) != LedgerJournal.count(l) + 1 || LedgerJournal.entry_id(posted) != id do Err(CodecError.DuplicateEntry)
+    else if !LedgerEntry.same(d, LedgerJournal.draft(posted)) || LedgerJournal.reversal_of(posted) != link do Err(CodecError.InvalidReversal)
+    else Ok(next) end end
+  end
+  pfn restore_entries(l : LedgerJournal.Ledger, entries : List((LedgerEntry.Draft, Option(String)))) : Result(LedgerJournal.Ledger, CodecError.Error) do
+    match entries do
+      Nil -> Ok(l)
+      Cons(item, rest) ->
+        let? next = append(l, item)
+        restore_entries(next, rest)
+    end
+  end
+  doc "Rebuild an ordered snapshot using public ledger operations; never merge duplicate events."
+  fn restore(accounts : List(LedgerAccount.Account), entries : List((LedgerEntry.Draft, Option(String)))) : Result(LedgerJournal.Ledger, CodecError.Error) do
+    let? l = Result.map_err(LedgerJournal.new(accounts), fn e -> CodecError.Ledger(e))
+    restore_entries(l, entries)
+  end
+end

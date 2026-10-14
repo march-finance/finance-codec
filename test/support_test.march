@@ -1,0 +1,45 @@
+mod CodecTest do
+  fn expect(r : Result(a, e)) : a do
+    match r do
+      Ok(v) -> v
+      Err(_) -> panic("unexpected codec test error")
+    end
+  end
+  fn usd() do expect(FinanceAsset.fiat("USD", 2)) end
+  fn accounts() do
+    [expect(LedgerAccount.make("cash", LedgerAccount.AssetAccount, usd())),
+     expect(LedgerAccount.make("equity", LedgerAccount.EquityAccount, usd()))]
+  end
+  fn draft(id : String, n : Int, external : Option(String)) do
+    let m = expect(FinanceMetadata.make("source,\"quoted\"\nline", 100, 101, external))
+    let d = expect(LedgerEntry.draft(id, m))
+    let q = FinanceAmount.from_atoms(usd(), BigInt.from_int(n))
+    let debit = expect(LedgerEntry.posting("cash", LedgerEntry.Debit, q))
+    let credit = expect(LedgerEntry.posting("equity", LedgerEntry.Credit, q))
+    LedgerEntry.add(LedgerEntry.add(d, debit), credit)
+  end
+  fn journal(n : Int) do
+    let l = expect(LedgerJournal.new(accounts()))
+    let (next, _) = expect(LedgerJournal.post(l, draft("first", n, Some("event,\"1\"\nend"))))
+    next
+  end
+  fn reversed(n : Int) do
+    let l = journal(n)
+    let p = match LedgerJournal.entries(l) do
+      Cons(p, _) -> p
+      Nil -> panic("expected original entry")
+    end
+    let m = expect(FinanceMetadata.make("undo", 102, 103, None))
+    let (next, _) = expect(LedgerJournal.reverse(l, p, "undo", m))
+    next
+  end
+  fn balance(l : LedgerJournal.Ledger) do FinanceAmount.format(expect(LedgerJournal.balance(l, "cash"))) end
+  fn replace(j : Json.JsonValue, key : String, value : Json.JsonValue) do
+    match j do
+      Json.Object(fields) -> Json.Object(List.map(fields, fn pair ->
+        let (k, v) = pair
+        (k, if k == key do value else v end)))
+      _ -> panic("expected object")
+    end
+  end
+end
