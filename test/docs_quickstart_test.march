@@ -1,0 +1,26 @@
+mod CodecQuickstart do
+  needs IO.Clock, IO.Process
+
+  fn example() : Result(String, CodecError.Error) do
+    let input = "{\"version\":\"1\",\"asset\":\"fiat:USD\",\"precision\":\"2\",\"amount\":\"12.50\"}"
+    let? quantity = CodecJson.decode_quantity(input)
+    let? restored = CodecJson.decode_quantity(CodecJson.encode_quantity(quantity))
+    Ok(FinanceAmount.format(restored))
+  end
+
+  test "documented exact JSON round trip" do
+    assert (match example() do
+      Ok(value) -> value == "12.50"
+      Err(_) -> false
+    end)
+  end
+
+  test "documented empty journal JSON and CSV round trip" do
+    let journal = Result.unwrap(CodecJson.decode_journal(
+      "{\"version\":\"1\",\"accounts\":[],\"entries\":[]}"))
+    let (accounts_csv, postings_csv) = CodecCsv.encode_journal(journal)
+    let restored = Result.unwrap(CodecCsv.decode_journal(accounts_csv, postings_csv))
+    assert (LedgerJournal.count(restored) == 0)
+    assert (CodecJson.encode_journal(restored) == CodecJson.encode_journal(journal))
+  end
+end
