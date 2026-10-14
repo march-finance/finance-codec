@@ -6,25 +6,22 @@ Licensed under the [MIT License](LICENSE).
 
 ## GitHub checkout and CI
 
-Clone the repositories into the same parent directory so Forge's sibling path
-dependencies resolve (finance-crypto is test-only for finance-codec integration):
+Clone this repository and resolve its published dependencies:
 
 ```sh
-git clone https://github.com/march-finance/finance-core.git
-git clone https://github.com/march-finance/finance-ledger.git
-git clone https://github.com/march-finance/finance-crypto.git
 git clone https://github.com/march-finance/finance-codec.git
 cd finance-codec
+forge deps
 forge test --seed=42
 ```
 
 GitHub Actions runs on pushes, pull requests and manual dispatches. It installs
 the pinned March 0.5.0 release, checks/builds this package, and runs debug/release
-tests and properties. Dependencies are checked out from their `main` branches.
+tests and properties. Dependencies use published version 0.1.0 with committed lockfiles.
 The workflow also tests all four libraries together via the integration consumer.
 
 Strict, exact JSON and CSV interchange for March finance data. Version 0.1.0,
-pinned to March 0.5.0. Production dependencies: sibling `finance-core` and
+pinned to March 0.5.0. Production dependencies: published `finance-core` and
 `finance-ledger`. No dependency on finance-crypto; its ledger event references
 already travel in metadata.
 
@@ -184,17 +181,19 @@ is provided. Restored balances do not prove transactions happened on a chain.
 
 ## Verify
 
-Keep sibling libraries alongside this repository; install the pinned compiler
+Resolve the published dependencies; install the pinned compiler
 with `forge toolchain install v0.5.0` if necessary.
 
 ```sh
 forge toolchain which
+forge deps
 forge check
 forge build --release
 forge test --seed=42
 forge test --seed=123
 forge test --release --seed=20261014
 cd integration
+forge deps
 forge test --seed=42
 forge test --release --seed=20261014
 ```
