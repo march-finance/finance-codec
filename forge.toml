@@ -1,0 +1,9 @@
+[package]
+name = "finance-codec"
+version = "0.1.0"
+type = "lib"
+description = "Strict exact JSON and CSV finance journal interchange"
+
+[deps]
+finance-core = { path = "../finance-core" }
+finance-ledger = { path = "../finance-ledger" }
